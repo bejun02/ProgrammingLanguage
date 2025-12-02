@@ -9,13 +9,13 @@ def information():
     print("A 총 보관 수:", len(global_variable.STOCKERS["STK-01"].list_jobs_A()))
     print("B 총 보관 수:", len(global_variable.STOCKERS["STK-01"].list_jobs_B()))
 
-def profit(amr_count,machine_counts:Dict):
-    parameter = [4,9,8,8,5.5]
+def profit(amr_count, machine_counts: Dict): 
+    parameter = {"A": 4, "B": 9, "C": 8, "D": 8, "E": 5.5}
     t = 0
-    s = 0
-    for i in machine_counts.values():
-        t += i*parameter[s]
-        s += 1
-    p = (100*min(len(global_variable.STOCKERS["STK-01"].list_jobs_A()),len(global_variable.STOCKERS["STK-01"].list_jobs_B())) - 5*(global_variable.FEED_COUNT_A+global_variable.FEED_COUNT_B)) 
-    profit = p / (t+0.011*amr_count)
-    print("profit: ", round(profit,2)*100000,"원")
+    for machine_type, count in machine_counts.items():
+        t += count * parameter[machine_type]
+    p = (100*min(len(global_variable.STOCKERS["STK-01"].list_jobs_A()),
+                 len(global_variable.STOCKERS["STK-01"].list_jobs_B()))
+         - 5*(global_variable.FEED_COUNT_A+global_variable.FEED_COUNT_B))
+    profit = p / (t + 0.011*amr_count)
+    print("profit: ", round(profit, 2)*100000, "원")
