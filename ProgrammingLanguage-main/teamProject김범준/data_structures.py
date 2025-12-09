@@ -91,7 +91,7 @@ class Warehouse:
             - inventory 리스트 끝에 추가 (FIFO를 위해)
         """
         self.inventory.append(job)
-        print(f"{self.name}: {job.job_id} 입고 (재고 {len(self.inventory)}개)")
+        #print(f"{self.name}: {job.job_id} 입고 (재고 {len(self.inventory)}개)")
 
     def pop(self) -> Optional[Job]:
         """
@@ -107,7 +107,7 @@ class Warehouse:
         if not self.inventory:
             return None
         job = self.inventory.pop(0)  # 첫 번째 항목 출고 (FIFO)
-        print(f"{self.name}: {job.job_id} 출고 (재고 {len(self.inventory)}개)")
+        #print(f"{self.name}: {job.job_id} 출고 (재고 {len(self.inventory)}개)")
         return job
 
 
@@ -258,7 +258,7 @@ class Stocker:
             - "ProdA-XXXX" → stored_jobs_A에 저장
             - "ProdB-XXXX" → stored_jobs_B에 저장
         """
-        print("Store에 저장되는 제품", job_id)
+        #print("Store에 저장되는 제품", job_id)
         productType = job_id.split("-")[0]  # "ProdA" 또는 "ProdB"
         
         if "A" in productType:
@@ -268,8 +268,8 @@ class Stocker:
         else:
             print("ERROR: 알 수 없는 제품 타입")
             
-        print(f"보관 중 ProductA (총 {len(self.stored_jobs_A)}개)")
-        print(f"보관 중 ProductB (총 {len(self.stored_jobs_B)}개)")
+        #print(f"보관 중 ProductA (총 {len(self.stored_jobs_A)}개)")
+        #print(f"보관 중 ProductB (총 {len(self.stored_jobs_B)}개)")
 
     def list_jobs_A(self) -> List[str]:
         """보관 중인 ProdA 목록 반환 (Profit 계산용)"""

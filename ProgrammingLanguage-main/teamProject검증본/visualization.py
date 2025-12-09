@@ -25,7 +25,9 @@ def _segment_state(runs, t: float):
     in_seg = False
     last_e = -np.inf
     last_ld = False
-    for s, e, *_rest, ld in runs:
+    for s, e, *_rest in runs:
+        # _rest는 (job_id, frm, to, loaded) 또는 (job_id, frm, to, loaded, waypoints)
+        ld = _rest[-2] if len(_rest) >= 2 else False  # loaded는 끝에서 2번째
         s = float(s); e = float(e)
         if s - EPS <= t <= e + EPS:
             in_seg = True
@@ -82,25 +84,78 @@ def draw_blocks(ax, group_blocks):
             
             
 def _pos_loaded_at_t(runs, t):
+    """waypoints를 따라 경로 보간"""
     last_xy = (0.0, 0.0); last_loaded = False
-    for s, e, _job, xy0, xy1, loaded in runs:
+    for run_data in runs:
+        # 하위 호환성: 6-tuple (s,e,job,frm,to,loaded) 또는 7-tuple (..., waypoints)
+        if len(run_data) == 7:
+            s, e, _job, xy0, xy1, loaded, waypoints = run_data
+        else:
+            s, e, _job, xy0, xy1, loaded = run_data
+            waypoints = None
+        
         s, e = float(s), float(e)
         if t < s:
             return last_xy, last_loaded
         if s <= t <= e:
             if e == s:
                 return xy1, loaded
-            r = (t - s) / (e - s)
-            x = xy0[0] + (xy1[0] - xy0[0]) * r
-            y = xy0[1] + (xy1[1] - xy0[1]) * r
-            return (x, y), loaded
+            
+            # waypoints가 있으면 경로를 따라 보간
+            if waypoints and len(waypoints) > 1:
+                time_ratio = (t - s) / (e - s)
+                # 각 세그먼트 길이 계산
+                segment_lengths = []
+                for i in range(len(waypoints) - 1):
+                    dx = waypoints[i+1][0] - waypoints[i][0]
+                    dy = waypoints[i+1][1] - waypoints[i][1]
+                    segment_lengths.append((dx**2 + dy**2)**0.5)
+                
+                total_length = sum(segment_lengths)
+                if total_length < 1e-9:
+                    return xy1, loaded
+                
+                # 목표 거리 계산
+                target_dist = time_ratio * total_length
+                
+                # 해당 세그먼트 찾기
+                cumulative = 0.0
+                for i, seg_len in enumerate(segment_lengths):
+                    if cumulative + seg_len >= target_dist:
+                        # 이 세그먼트 내에서 보간
+                        if seg_len < 1e-9:
+                            return waypoints[i], loaded
+                        local_ratio = (target_dist - cumulative) / seg_len
+                        x = waypoints[i][0] + (waypoints[i+1][0] - waypoints[i][0]) * local_ratio
+                        y = waypoints[i][1] + (waypoints[i+1][1] - waypoints[i][1]) * local_ratio
+                        return (x, y), loaded
+                    cumulative += seg_len
+                
+                # 마지막 지점 반환
+                return waypoints[-1], loaded
+            else:
+                # waypoints가 없으면 직선 보간
+                r = (t - s) / (e - s)
+                x = xy0[0] + (xy1[0] - xy0[0]) * r
+                y = xy0[1] + (xy1[1] - xy0[1]) * r
+                return (x, y), loaded
         last_xy, last_loaded = xy1, loaded
     return last_xy, last_loaded
 
 def infer_bounds_from_runs_blocks_and_points(amr_runs, blocks, extra_points=(), margin=2):
     xs, ys = set(), set()
     for runs in amr_runs.values():
-        for _s, _e, _job, frm, to, _ld in runs:
+        for run_data in runs:
+            # 6-tuple 또는 7-tuple 처리
+            if len(run_data) == 7:
+                _s, _e, _job, frm, to, _ld, waypoints = run_data
+                # waypoints의 모든 좌표 추가
+                if waypoints:
+                    for wp in waypoints:
+                        xs.add(int(wp[0]))
+                        ys.add(int(wp[1]))
+            else:
+                _s, _e, _job, frm, to, _ld = run_data
             xs.update([int(frm[0]), int(to[0])])
             ys.update([int(frm[1]), int(to[1])])
     for (x, y) in blocks:

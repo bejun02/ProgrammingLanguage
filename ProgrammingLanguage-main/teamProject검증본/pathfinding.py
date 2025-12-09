@@ -33,7 +33,7 @@ from functools import lru_cache
 # ================================================================================
 # 동일한 출발점-도착점 쿼리에 대해 결과 재사용
 _path_cache: Dict[Tuple[Tuple[float, float], Tuple[float, float]], Tuple[float, List[Tuple[float, float]]]] = {}
-ENABLE_PATH_CACHE = True  # 캠시 활성화 여부
+ENABLE_PATH_CACHE = True  # 캐시 활성화
 
 # ================================================================================
 # 상수 정의
@@ -174,7 +174,7 @@ class PathGraph:
     
     def add_machine(self, stage: str, center_x: float, center_y: float, machine_name: str = None):
         """
-        설비 추가 (금지 구역 + 포트 노드)
+        설비 추가 (금지 구역 + 포트 노드 + 코너 노드)
         
         Args:
             stage: 공정 스테이지 (A, B, C, D, E)
@@ -182,7 +182,8 @@ class PathGraph:
             machine_name: 설비 이름 (예: "A-1")
         """
         # 금지 구역 추가
-        self.obstacles.append(ObstacleZone(center_x, center_y))
+        obs = ObstacleZone(center_x, center_y)
+        self.obstacles.append(obs)
         
         # 포트 좌표 계산
         input_port = (center_x - PORT_OFFSET, center_y)   # 입력포트 (왼쪽)
@@ -191,6 +192,13 @@ class PathGraph:
         # 노드에 포트 추가
         self.nodes.add(input_port)
         self.nodes.add(output_port)
+        
+        # 설비 금지구역의 4개 코너를 경유 노드로 추가 (약간 여유를 둠)
+        margin = 0.1
+        self.nodes.add((obs.x_min - margin, obs.y_min - margin))  # 좌하단
+        self.nodes.add((obs.x_max + margin, obs.y_min - margin))  # 우하단
+        self.nodes.add((obs.x_max + margin, obs.y_max + margin))  # 우상단
+        self.nodes.add((obs.x_min - margin, obs.y_max + margin))  # 좌상단
         
         # 포트 정보 저장
         name = machine_name or f"{stage}-{len([o for o in self.obstacles])}"
@@ -260,8 +268,10 @@ class PathGraph:
         # 경로 역추적용
         parent: Dict[Tuple[float, float], Optional[Tuple[float, float]]] = {start: None}
         
+        visited_count = 0
         while pq:
             curr_dist, curr = heapq.heappop(pq)
+            visited_count += 1
             
             # 도착점 도달
             if curr == end:
@@ -293,7 +303,22 @@ class PathGraph:
                     parent[next_node] = curr
                     heapq.heappush(pq, (new_dist, next_node))
         
-        # 경로를 찾지 못함 - 직선 거리 반환 (fallback)
+        # 경로를 찾지 못함 - 간단한 우회 경로 생성 (fallback)
+        # print(f"WARNING: No path found from {start} to {end}, visited {visited_count} nodes out of {len(temp_nodes)}")
+        
+        # 간단한 우회: 중간 지점을 거쳐서 가기
+        mid_y = (start[1] + end[1]) / 2
+        if abs(start[1] - end[1]) > 5:  # Y축 차이가 크면 중간 경유
+            mid_points = []
+            if start[1] < end[1]:  # 위로 이동
+                mid_points = [(start[0], mid_y - 1), (end[0], mid_y - 1)]
+            else:  # 아래로 이동
+                mid_points = [(start[0], mid_y + 1), (end[0], mid_y + 1)]
+            
+            path = [start] + mid_points + [end]
+            total_dist = sum(self.get_distance(path[i], path[i+1]) for i in range(len(path)-1))
+            return (total_dist, path)
+        
         return (self.get_distance(start, end), [start, end])
     
     def clear(self):
@@ -324,6 +349,13 @@ def init_obstacle_map(machine_positions: Dict[str, List[Tuple[float, float]]]):
     global path_graph, _path_cache
     path_graph.clear()
     path_graph.add_machines_from_dict(machine_positions)
+    
+    # 추가 경유 노드: Y축 통로 (상단/하단 통로)
+    # 설비들 사이를 연결하는 수평 통로
+    y_values = [1, 9, 11, 19]  # 상단(1), 중간 하단(9), 중간 상단(11), 하단(19)
+    for x in range(0, 61, 4):  # 4m 간격으로 경유점
+        for y in y_values:
+            path_graph.nodes.add((float(x), float(y)))
     
     # 캐시 초기화 (설비 배치가 변경되면 캐시 무효화)
     _path_cache.clear()

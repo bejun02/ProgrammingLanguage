@@ -144,9 +144,9 @@ def record_machine_run(m: Machine, job: Job, s: float, e: float):
     global_variable.machine_runs.setdefault(m.name, []).append((s, e, job.job_id, m.stage))
     global_variable.job_runs.setdefault(job.job_id, []).append((m.stage, s, e, m.name))
 
-def record_amr_run(a: AMR, job: Job, s: float, e: float,frm: Tuple[float,float], to: Tuple[float,float],loaded: bool):
-    '''AMR 기록 저장'''
-    global_variable.amr_runs.setdefault(a.name, []).append((s, e, job.job_id, frm, to, loaded))
+def record_amr_run(a: AMR, job: Job, s: float, e: float,frm: Tuple[float,float], to: Tuple[float,float],loaded: bool, waypoints=None):
+    '''AMR 기록 저장 (waypoints 포함)'''
+    global_variable.amr_runs.setdefault(a.name, []).append((s, e, job.job_id, frm, to, loaded, waypoints))
 
 def schedule(at: float, fn: Callable[[], None]):
     '''스케쥴 신청'''

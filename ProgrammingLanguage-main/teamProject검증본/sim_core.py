@@ -5,10 +5,10 @@ from data_structures import *
 from config import *
 from config import global_variable
 from logger import _amr_push_task,_amr_pop_task
-from pathfinding import init_obstacle_map, pathfinding_dist, obstacle_map
+from pathfinding import init_obstacle_map, pathfinding_dist, obstacle_map, get_path
 
 # 경로 탐색 모드 설정 (True: 다익스트라+금지구역, False: 유클리드)
-USE_PATHFINDING = True
+USE_PATHFINDING = False  # 성능 문제로 임시 비활성화
 
 def simulate(cfg: FactoryConfig):
     '''시나리오별 설정으로 실행'''
@@ -184,7 +184,8 @@ def move_to_next_stage_from_output(m: Machine):
 
         def go_pickup():
             log(f"{amr.name}: 픽업지({m.name}={m.output_port})로 이동 중")
-            record_amr_run(amr, job, depart_at, arrive_pick, future_start, m.output_port, loaded=False)
+            waypoints = get_path(future_start, m.output_port) if USE_PATHFINDING else None
+            record_amr_run(amr, job, depart_at, arrive_pick, future_start, m.output_port, loaded=False, waypoints=waypoints)
             amr.xy = m.output_port
 
         def pickup_start():
@@ -195,7 +196,8 @@ def move_to_next_stage_from_output(m: Machine):
                 m.output_buf = None
                 job.in_transit = True
                 log(f"{job.job_id}: {amr.name} 적재 완료 & 출발 → {drop_xy}")
-                record_amr_run(amr, job, depart_pick, arrive_drop, m.output_port, drop_xy, loaded=True)
+                waypoints = get_path(m.output_port, drop_xy) if USE_PATHFINDING else None
+                record_amr_run(amr, job, depart_pick, arrive_drop, m.output_port, drop_xy, loaded=True, waypoints=waypoints)
                 
             if m.waiting_done is not None and m.output_buf is None:
                 moved = m.waiting_done; m.waiting_done = None
@@ -265,7 +267,8 @@ def move_to_next_stage_from_output(m: Machine):
 
     def go_pickup():
         log(f"{amr.name}: 픽업지({m.name}={m.output_port})로 이동 중")
-        record_amr_run(amr, job, depart_at, arrive_pick, future_start, m.output_port, loaded=False)
+        waypoints = get_path(future_start, m.output_port) if USE_PATHFINDING else None
+        record_amr_run(amr, job, depart_at, arrive_pick, future_start, m.output_port, loaded=False, waypoints=waypoints)
         amr.xy = m.output_port
 
     def pickup_start():
@@ -276,7 +279,8 @@ def move_to_next_stage_from_output(m: Machine):
             m.output_buf = None
             job.in_transit = True
             log(f"{job.job_id}: {amr.name} 적재 완료 & 출발 → {drop_xy}")
-            record_amr_run(amr, job, depart_pick, arrive_drop, m.output_port, drop_xy, loaded=True)
+            waypoints = get_path(m.output_port, drop_xy) if USE_PATHFINDING else None
+            record_amr_run(amr, job, depart_pick, arrive_drop, m.output_port, drop_xy, loaded=True, waypoints=waypoints)
 
         if m.waiting_done is not None and m.output_buf is None:
             moved = m.waiting_done; m.waiting_done = None
@@ -355,7 +359,8 @@ def try_dispatch_from_warehouse_to_A():
 
     def go_pickup():
         log(f"{amr.name}: 픽업지(Warehouse={pick_xy})로 이동 중")
-        record_amr_run(amr, job, depart_at, arrive_pick, future_start, pick_xy, loaded=False)
+        waypoints = get_path(future_start, pick_xy) if USE_PATHFINDING else None
+        record_amr_run(amr, job, depart_at, arrive_pick, future_start, pick_xy, loaded=False, waypoints=waypoints)
         amr.xy = pick_xy
 
     def pickup_start():
@@ -364,7 +369,8 @@ def try_dispatch_from_warehouse_to_A():
     def pickup_end():
         job.in_transit = True
         log(f"{job.job_id}: {amr.name} 적재 완료 & 출발 → {drop_m.name}@{drop_xy}")
-        record_amr_run(amr, job, depart_pick, arrive_drop, pick_xy, drop_xy, loaded=True)
+        waypoints = get_path(pick_xy, drop_xy) if USE_PATHFINDING else None
+        record_amr_run(amr, job, depart_pick, arrive_drop, pick_xy, drop_xy, loaded=True, waypoints=waypoints)
 
     def drop_arrive():
         amr.xy = drop_xy
@@ -521,7 +527,8 @@ def pull_from_prev_to(m_next: Machine, policy: str = "eta"):
 
     def go_pickup():
         log(f"{amr.name}: 픽업지({src_m.name}={src_m.output_port})로 이동 중")
-        record_amr_run(amr, job, depart_at, arrive_pick, future_start, src_m.output_port, loaded=False)
+        waypoints = get_path(future_start, src_m.output_port) if USE_PATHFINDING else None
+        record_amr_run(amr, job, depart_at, arrive_pick, future_start, src_m.output_port, loaded=False, waypoints=waypoints)
         amr.xy = src_m.output_port
 
     def pickup_start():
@@ -532,7 +539,8 @@ def pull_from_prev_to(m_next: Machine, policy: str = "eta"):
             src_m.output_buf = None
             job.in_transit = True
             log(f"{job.job_id}: {amr.name} 적재 완료 & 출발 → {m_next.name}@{drop_xy}")
-            record_amr_run(amr, job, depart_pick, arrive_drop, src_m.output_port, drop_xy, loaded=True)
+            waypoints = get_path(src_m.output_port, drop_xy) if USE_PATHFINDING else None
+            record_amr_run(amr, job, depart_pick, arrive_drop, src_m.output_port, drop_xy, loaded=True, waypoints=waypoints)
 
         if src_m.waiting_done is not None and src_m.output_buf is None:
             moved = src_m.waiting_done; src_m.waiting_done = None
