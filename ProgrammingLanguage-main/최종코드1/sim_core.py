@@ -235,6 +235,8 @@ def move_to_next_stage_from_output(m: Machine):
             log(f"{job.job_id}: {amr.name} 하차 완료 @ Stocker")
             log(f"{job.job_id}: 출하 완료 → Stocker에 보관")
             stk.store(job.job_id)
+            global_variable.active_wip_count -= 1 
+            # log(f"WIP: {global_variable.active_wip_count}")
 
             if m.waiting_done is not None and m.output_buf is None:
                 moved = m.waiting_done; m.waiting_done = None
@@ -336,6 +338,13 @@ def move_to_next_stage_from_output(m: Machine):
     
 def try_dispatch_from_warehouse_to_A():
     '''원자재 창고에서 설비A(산화)로 AMR dispatch'''
+    # [Dynamic Feeding] CONWIP Control
+    # Limit active jobs in the factory to prevent congestion
+    MAX_WIP = 50 
+    if global_variable.active_wip_count >= MAX_WIP:
+        # log(f"Feeding Paused (WIP {global_variable.active_wip_count} >= {MAX_WIP})")
+        return
+
     if _exists_priority_job_for_A():
         return
 
@@ -362,6 +371,9 @@ def try_dispatch_from_warehouse_to_A():
     if job is None:
         release_input(drop_m)
         return
+        
+    global_variable.active_wip_count += 1
+    # log(f"WIP Increment: {global_variable.active_wip_count}")
 
     pick_xy = global_variable.WAREHOUSE.xy
     drop_xy = drop_m.input_port
@@ -427,7 +439,16 @@ def dist(a: Tuple[float, float], b: Tuple[float, float]) -> float:
         return _calculate_path_length(path)
     
     # 2. Strict Error
-    raise RuntimeError(f"Path not found in cache: {a} -> {b}. Strict caching is enabled.")
+    # 2. Strict Error -> Fallback to On-the-fly
+    # raise RuntimeError(f"Path not found in cache: {a} -> {b}. Strict caching is enabled.")
+    log(f"Warning: Cache miss {a}->{b} (Layout Change?), calculating on-the-fly...")
+    path = global_variable.path_finder.find_path(a, b)
+    if path:
+        global_variable.path_cache[(a, b)] = path
+        return _calculate_path_length(path)
+    else:
+        # Really not found
+        raise RuntimeError(f"Pathfinding failed: {a} -> {b}")
 
 def _calculate_path_length(path: List[Tuple[float, float]]) -> float:
     length = 0.0

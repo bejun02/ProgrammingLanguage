@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # result 
     information()
     profit(amr_count=amr_count,machine_counts=machine_counts)
-    animate_from_amr_runs(global_variable.amr_runs,interval_ms=100,frames=1296000,trail=True,machine_positions=machine_positions)
+    #animate_from_amr_runs(global_variable.amr_runs,interval_ms=100,frames=1296000,trail=True,machine_positions=machine_positions)
 
 
 

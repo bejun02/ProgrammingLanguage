@@ -44,6 +44,7 @@ class Machine:
     input_reserved: bool = False 
     
     processing_job: Optional["Job"] = None
+    processing_start_time: Optional[float] = None # Added for Smart Routing
     output_buf: Optional["Job"] = None
     waiting_done: Optional["Job"] = None
 

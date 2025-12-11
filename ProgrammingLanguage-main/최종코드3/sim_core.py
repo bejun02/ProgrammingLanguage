@@ -133,6 +133,7 @@ def try_start_processing(m: Machine):
         s = global_variable.now
         pt = process_time_for(m.stage, job, m); e = s + pt
         m.processing_job = job
+        m.processing_start_time = s  # Track start time for Smart Routing
 
         def start():
             log(f"{job.job_id}({job.product}): {m.stage} 시작 @ {m.name} (dur={pt}s, cycle_idx={job.cycle_idx})")
@@ -229,10 +230,31 @@ def move_to_next_stage_from_output(m: Machine):
     slot_ok = [x for x in next_machines if has_free_input(x)]
 
     if slot_ok:
-        rr = global_variable.ROUND_ROBIN_IDX.get(nxt, 0)
-        drop_m = slot_ok[rr % len(slot_ok)]
-        global_variable.ROUND_ROBIN_IDX[nxt] = rr + 1
-        log(f"{nxt}: 입력 슬롯 여유 {drop_m.name} 선택 (라운드로빈, free {len(slot_ok)}대)")
+        # [Smart Routing] Cost-Based (Travel + Wait)
+        amr_speed = getattr(global_variable.CURRENT_CFG, "amr_speed", 1.0)
+
+        def cost_func(target_m):
+            # 1. Travel Time
+            d = dist(m.output_port, target_m.input_port)
+            travel_t = d / max(amr_speed, 1e-9)
+            
+            # 2. Wait Time
+            wait_t = 0.0
+            # (a) Input Buffer Queue
+            for q_job in target_m.input_buf:
+                wait_t += process_time_for(target_m.stage, q_job, target_m)
+            
+            # (b) Currently Processing Job (Remaining Time only)
+            if target_m.processing_job and target_m.processing_start_time is not None:
+                full_pt = process_time_for(target_m.stage, target_m.processing_job, target_m)
+                passed = global_variable.now - target_m.processing_start_time
+                remaining = max(0.0, full_pt - passed)
+                wait_t += remaining
+            
+            return travel_t + wait_t
+
+        drop_m = min(slot_ok, key=cost_func)
+        log(f"{nxt}: Smart Routing 선택 -> {drop_m.name} (Cost 최소, free {len(slot_ok)}대)")
     else:
         log(f"{nxt}: 모든 설비 입력 슬롯 꽉참 → {job.job_id} output 대기 유지")
         return

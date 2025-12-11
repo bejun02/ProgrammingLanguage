@@ -1,16 +1,17 @@
 """
-Routing + AMR Count Sweep Test
+Routing + AMR Count Sweep Test (Parallel Version)
 Tests different routing strategies with varying AMR counts to find the global optimum.
 """
 import sim_core
-from config import global_variable
+from config import global_variable, schedule, next_stage_for, load_time_for, unload_time_for, log, process_time_for
 from data_structures import Machine
+import multiprocessing as mp
 import math
 
 # Configuration
 SIM_TIME = 1296000
 SEED = 20
-AMR_RANGE = range(5, 21)  # 5 to 20 AMRs
+AMR_RANGE = range(3, 31)  # 3 to 30 AMRs
 
 machine_positions = {
     "A": [(14, 3), (14, 7), (14, 13), (14, 15), (14, 17)],
@@ -20,6 +21,9 @@ machine_positions = {
     "E": [(46, 3), (46, 5), (46, 7), (46, 13), (46, 15)],
 }
 machine_counts = {"A": 5, "B": 8, "C": 6, "D": 5, "E": 5}
+
+# Global routing mode (set by worker process)
+ROUTING_MODE = "round_robin"
 
 def calculate_profit(amr_count):
     parameter = {"A": 4, "B": 9, "C": 8, "D": 8, "E": 5.5}
@@ -37,14 +41,11 @@ def calculate_profit(amr_count):
     profit = p / (t + 0.011 * amr_count) * 100000
     return profit
 
-# Global routing mode flag
-ROUTING_MODE = "round_robin"  # Will be changed during sweep
-
-# Monkey-patch the routing logic
+# Original function storage
 original_move_to_next = None
 
 def patch_routing():
-    """Patch sim_core to use the current ROUTING_MODE"""
+    """Patch sim_core to use the current ROUTING_MODE (Global)"""
     global original_move_to_next
     
     # Store original function if not already stored
@@ -56,8 +57,6 @@ def patch_routing():
         job = m.output_buf
         if job is None or job.reserved or job.in_transit:
             return
-        
-        from config import next_stage_for, load_time_for, unload_time_for, log, process_time_for
         
         nxt = next_stage_for(job, m.stage)
         if nxt is None:
@@ -82,28 +81,39 @@ def patch_routing():
             
         elif ROUTING_MODE == "nearest":
             def dist_cost(target_m):
+                # Use raw distance for nearest
                 return sim_core.dist(m.output_port, target_m.input_port)
             drop_m = min(slot_ok, key=dist_cost)
             
+        elif ROUTING_MODE == "shortest_queue":
+            # [Max Throughput] Select machine with fewest pending jobs (Load Balancing)
+            drop_m = min(slot_ok, key=lambda x: len(x.input_buf))
+
         elif ROUTING_MODE == "cost_based":
             amr_speed = getattr(global_variable.CURRENT_CFG, "amr_speed", 1.0)
             def cost(target_m):
                 d = sim_core.dist(m.output_port, target_m.input_port)
                 travel_t = d / max(amr_speed, 1e-9)
                 wait_t = 0.0
+                # (a) Input queue wait
                 for q_job in target_m.input_buf:
                     wait_t += process_time_for(target_m.stage, q_job, target_m)
-                if target_m.processing_job:
-                    wait_t += process_time_for(target_m.stage, target_m.processing_job, target_m)
+                # (b) Processing job remaining time
+                if target_m.processing_job and target_m.processing_start_time is not None:
+                    full_pt = process_time_for(target_m.stage, target_m.processing_job, target_m)
+                    passed = global_variable.now - target_m.processing_start_time
+                    remaining = max(0.0, full_pt - passed)
+                    wait_t += remaining
+                
                 return travel_t + wait_t
             drop_m = min(slot_ok, key=cost)
         else:
-            # Fallback to round robin
+            # Fallback
             rr = global_variable.ROUND_ROBIN_IDX.get(nxt, 0)
             drop_m = slot_ok[rr % len(slot_ok)]
             global_variable.ROUND_ROBIN_IDX[nxt] = rr + 1
         
-        # Continue with the rest of the original logic
+        # Dispatch
         if not sim_core.reserve_input(drop_m):
             return
         
@@ -124,6 +134,9 @@ def patch_routing():
             sim_core.record_amr_run(amr, job, depart_at, arrive_pick, future_start, m.output_port, loaded=False, path=path)
             amr.xy = m.output_port
 
+        def pickup_start():
+            log(f"{job.job_id}: {amr.name} 적재 중 ({load_sec:.2f}s) @ {m.name}")
+
         def pickup_end():
             if m.output_buf is job:
                 m.output_buf = None
@@ -138,6 +151,10 @@ def patch_routing():
                 patched_move_to_next_stage_from_output(m)
             sim_core.try_start_processing(m)
 
+        def drop_arrive():
+            amr.xy = drop_xy
+            log(f"{job.job_id}: {amr.name} 도착 (하차 대기 시작, {unload_sec:.2f}s) → {drop_xy}")
+
         def drop_end():
             job.in_transit = False
             job.reserved = False
@@ -147,11 +164,10 @@ def patch_routing():
             _amr_pop_task(amr, job_id=job.job_id, depart_drop=res["depart_drop"])
             sim_core.kick_dispatch_from_prev_stage(nxt)
 
-        from config import schedule
         schedule(depart_at, go_pickup)
-        schedule(arrive_pick, lambda: None)
+        schedule(arrive_pick, pickup_start)
         schedule(depart_pick, pickup_end)
-        schedule(arrive_drop, lambda: None)
+        schedule(arrive_drop, drop_arrive)
         schedule(depart_drop, drop_end)
 
         global_variable.amr_waits.setdefault(amr.name, []).append((arrive_pick, depart_pick, job.job_id, "load", m.output_port))
@@ -160,60 +176,122 @@ def patch_routing():
     # Apply patch
     sim_core.move_to_next_stage_from_output = patched_move_to_next_stage_from_output
 
-def run_sweep():
+
+def worker_task(args):
+    """
+    Executed by each worker process.
+    args: (method_name, amr_count)
+    """
+    method, amr_n = args
+    
+    # 1. Set global routing mode and patch
     global ROUTING_MODE
+    ROUTING_MODE = method
+    patch_routing()
     
-    routing_methods = ["round_robin", "nearest", "cost_based"]
-    results = []
+    # 2. Configure Simulation
+    cfg = sim_core.FactoryConfig(
+        sim_time=SIM_TIME,
+        seed=SEED,
+        feed_sequence=("ProdA", "ProdB"),
+        amr_count=amr_n,
+        machine_counts=machine_counts,
+        machine_positions=machine_positions
+    )
     
-    print("=" * 60)
-    print("Routing + AMR Sweep Test")
-    print("=" * 60)
+    # 3. Running Simulation
+    # Note: simulate() resets globals, so we are good.
+    sim_core.simulate(cfg)
     
+    # 4. Calculate Profit
+    profit_val = calculate_profit(amr_n)
+    
+    stk = global_variable.STOCKERS.get("STK-01")
+    count_a = len(stk.list_jobs_A()) if stk else 0
+    count_b = len(stk.list_jobs_B()) if stk else 0
+    
+    return (method, amr_n, profit_val, count_a, count_b)
+
+
+def run_sweep():
+    # User-selectable methods
+    routing_methods = [
+        "round_robin",
+        # "shortest_queue",
+        # "nearest",      # Uncomment to test
+        "cost_based",   # Uncomment to test
+    ]
+    
+    # Build task list
+    tasks = []
     for method in routing_methods:
-        ROUTING_MODE = method
-        patch_routing()
-        
-        print(f"\n--- Testing: {method.upper()} ---")
-        
-        best_profit = 0
-        best_amr = 0
-        
         for amr_n in AMR_RANGE:
-            cfg = sim_core.FactoryConfig(
-                sim_time=SIM_TIME,
-                seed=SEED,
-                feed_sequence=("ProdA", "ProdB"),
-                amr_count=amr_n,
-                machine_counts=machine_counts,
-                machine_positions=machine_positions
-            )
+            tasks.append((method, amr_n))
             
-            sim_core.simulate(cfg)
-            profit = calculate_profit(amr_n)
-            
-            count_a = len(global_variable.STOCKERS["STK-01"].list_jobs_A())
-            count_b = len(global_variable.STOCKERS["STK-01"].list_jobs_B())
-            
-            print(f"AMR={amr_n:2d}: Profit={profit:,.0f} (A:{count_a}, B:{count_b})")
-            
-            if profit > best_profit:
-                best_profit = profit
-                best_amr = amr_n
-        
-        results.append((method, best_amr, best_profit))
-        print(f">>> Best for {method}: AMR={best_amr}, Profit={best_profit:,.0f}")
+    num_workers = min(mp.cpu_count(), 10)
+    print("=" * 60)
+    print(f"Routing + AMR Sweep Test (Parallel - {num_workers} Workers)")
+    print(f"Total Simulations: {len(tasks)}")
+    print("=" * 60)
     
-    # Summary
-    print("\n" + "=" * 60)
+    # Run Parallel
+    results = []
+    with mp.Pool(processes=num_workers) as pool:
+        # pool.imap_unordered for real-time results, or map for batch
+        # Let's use map and sort later
+        results = pool.map(worker_task, tasks)
+    
+    # Process Results
+    results.sort(key=lambda x: (x[0], x[1])) # Sort by method, then amr
+    
+    # Display grouped by method
+    method_best = {}
+    
+    current_method = None
+    best_profit = -1
+    best_amr = -1
+    
+    for r in results:
+        method, amr, profit, a, b = r
+        
+        if method != current_method:
+            if current_method is not None:
+                method_best[current_method] = (best_amr, best_profit)
+                print(f">>> Best for {current_method}: AMR={best_amr}, Profit={best_profit:,.0f}\n")
+            
+            print(f"--- Testing: {method.upper()} ---")
+            current_method = method
+            best_profit = -1
+            best_amr = -1
+            
+        print(f"AMR={amr:2d}: Profit={profit:,.0f} (A:{a}, B:{b})")
+        
+        if profit > best_profit:
+            best_profit = profit
+            best_amr = amr
+            
+    # Last method
+    if current_method is not None:
+        method_best[current_method] = (best_amr, best_profit)
+        print(f">>> Best for {current_method}: AMR={best_amr}, Profit={best_profit:,.0f}\n")
+        
+    print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    for method, amr, profit in results:
-        print(f"{method:15s}: AMR={amr:2d}, Profit={profit:,.0f}")
     
-    # Find global best
-    best = max(results, key=lambda x: x[2])
-    print(f"\n🏆 GLOBAL BEST: {best[0]} with AMR={best[1]}, Profit={best[2]:,.0f}")
+    global_best_p = -1
+    global_best_m = ""
+    global_best_a = -1
+    
+    for m, (ba, bp) in method_best.items():
+        print(f"{m:15s}: AMR={ba:2d}, Profit={bp:,.0f}")
+        if bp > global_best_p:
+            global_best_p = bp
+            global_best_m = m
+            global_best_a = ba
+            
+    print(f"\n🏆 GLOBAL BEST: {global_best_m} with AMR={global_best_a}, Profit={global_best_p:,.0f}")
 
 if __name__ == "__main__":
+    mp.freeze_support()
     run_sweep()
