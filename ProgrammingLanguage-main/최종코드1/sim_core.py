@@ -244,6 +244,7 @@ def move_to_next_stage_from_output(m: Machine):
                 move_to_next_stage_from_output(m)
             try_start_processing(m)
             _amr_pop_task(amr, job_id=job.job_id, depart_drop=res["depart_drop"])
+            preposition_idle_amr(amr) # [Improvement] Enable Pre-positioning
 
         schedule(depart_at, go_pickup)
         schedule(arrive_pick, pickup_start)
@@ -263,10 +264,41 @@ def move_to_next_stage_from_output(m: Machine):
     slot_ok = [x for x in next_machines if has_free_input(x)]
 
     if slot_ok:
-        rr = global_variable.ROUND_ROBIN_IDX.get(nxt, 0)
-        drop_m = slot_ok[rr % len(slot_ok)]
-        global_variable.ROUND_ROBIN_IDX[nxt] = rr + 1
-        log(f"{nxt}: 입력 슬롯 여유 {drop_m.name} 선택 (라운드로빈, free {len(slot_ok)}대)")
+        # [Cost Based Routing] Logic
+        # Calculate cost = Travel Time + Wait Time
+        # Wait time = Sum of process times in input_buf + Remaining process time of current job
+        best_m = None
+        min_cost = float("inf")
+        
+        for cand in slot_ok:
+            # 1. Travel Time
+            dist_val = dist(m.output_port, cand.input_port)
+            travel_t = dist_val / max(global_variable.CURRENT_CFG.amr_speed, 1e-9)
+            
+            # 2. Wait Time
+            wait_t = 0.0
+            # (a) Input Buffer Jobs
+            for q_job in cand.input_buf:
+                wait_t += process_time_for(cand.stage, q_job, cand)
+            
+            # (b) Currently Processing Job (Remaining Time only)
+            if cand.processing_job and cand.processing_start_time is not None:
+                full_pt = process_time_for(cand.stage, cand.processing_job, cand)
+                passed = global_variable.now - cand.processing_start_time
+                remaining = max(0.0, full_pt - passed)
+                wait_t += remaining
+                
+            total_cost = travel_t + wait_t
+            
+            if total_cost < min_cost:
+                min_cost = total_cost
+                best_m = cand
+                
+        drop_m = best_m
+        if drop_m is None: # Should not happen if slot_ok is not empty
+             drop_m = slot_ok[0]
+             
+        log(f"{nxt}: 최적 설비 {drop_m.name} 선택 (Cost={min_cost:.1f}, Free={len(slot_ok)})")
     else:
         log(f"{nxt}: 모든 설비 입력 슬롯 꽉참 → {job.job_id} output 대기 유지")
         return
@@ -340,8 +372,7 @@ def try_dispatch_from_warehouse_to_A():
     '''원자재 창고에서 설비A(산화)로 AMR dispatch'''
     # [Dynamic Feeding] CONWIP Control
     # Limit active jobs in the factory to prevent congestion
-    MAX_WIP = 50 
-    if global_variable.active_wip_count >= MAX_WIP:
+    if global_variable.active_wip_count >= global_variable.MAX_WIP:
         # log(f"Feeding Paused (WIP {global_variable.active_wip_count} >= {MAX_WIP})")
         return
 
@@ -415,6 +446,7 @@ def try_dispatch_from_warehouse_to_A():
         release_input(drop_m)
         try_dispatch_from_warehouse_to_A()
         _amr_pop_task(amr, job_id=job.job_id, depart_drop=res["depart_drop"])
+        preposition_idle_amr(amr) # [Improvement] Enable Pre-positioning
 
     schedule(depart_at, go_pickup)
     schedule(arrive_pick, pickup_start)
@@ -613,6 +645,7 @@ def pull_from_prev_to(m_next: Machine, policy: str = "eta"):
         enqueue_to_machine(m_next, job)
         release_input(m_next)  
         _amr_pop_task(amr, job_id=job.job_id, depart_drop=res["depart_drop"])
+        preposition_idle_amr(amr) # [Improvement] Enable Pre-positioning
         pull_from_prev_to(m_next, policy=policy)
 
 
@@ -630,9 +663,8 @@ def generate_one_job():
     
     # [Feed Cutoff] 남은 시간이 제품 완성에 필요한 최소 시간보다 작으면 투입 중단
     # 277분 = 16620초
-    MIN_COMPLETION_TIME = 16620 # seconds (277 minutes)
     remaining_time = global_variable.SIM_END - global_variable.now
-    if remaining_time < MIN_COMPLETION_TIME:
+    if remaining_time < global_variable.MIN_COMPLETION_TIME:
         return None  # 투입 중단
     
     if not global_variable.FEED_SEQ:
@@ -694,7 +726,7 @@ def preposition_idle_amr(amr):
                     time_diff = expected_end - arrival_time
                     
                     # Skip if we'd arrive way too early (>60s wait) or too late (>30s after)
-                    if -30 < time_diff < 60:
+                    if global_variable.PREPOS_WINDOW_MIN < time_diff < global_variable.PREPOS_WINDOW_MAX:
                         candidates.append((abs(time_diff), expected_end, m, travel_time))
     
     if not candidates:
@@ -740,6 +772,7 @@ def preposition_idle_amr(amr):
     def do_move():
         # Only actually move if AMR is still free (wasn't assigned a real task)
         if amr.free_time <= now and amr.xy == start_xy:
+            # print(f"[PREPOS] {amr.name} 사전 배치 이동 -> {target_m.name}")
             path = global_variable.path_cache.get((start_xy, target_m.output_port), None)
             if path:
                 global_variable.amr_runs.setdefault(amr.name, []).append(

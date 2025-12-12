@@ -22,7 +22,7 @@ machine_counts={"A":5,"B":8,"C":6,"D":5,"E":5}
 if __name__ == "__main__":
 
     # AMR 대수
-    amr_count = 11
+    amr_count = 9
     cfg = sim_core.FactoryConfig(sim_time=1296000, seed=20, feed_sequence=("ProdA","ProdB"), amr_count=amr_count, machine_counts=machine_counts,machine_positions= machine_positions)
     sim_core.simulate(cfg)
     # result 

@@ -11,7 +11,7 @@ import math
 # Configuration
 SIM_TIME = 1296000
 SEED = 20
-AMR_RANGE = range(3, 31)  # 3 to 30 AMRs
+AMR_RANGE = range(1, 31)  # 3 to 30 AMRs
 
 machine_positions = {
     "A": [(14, 3), (14, 7), (14, 13), (14, 15), (14, 17)],
@@ -216,9 +216,9 @@ def worker_task(args):
 def run_sweep():
     # User-selectable methods
     routing_methods = [
-        "round_robin",
-        "shortest_queue",
-        "nearest",      # Uncomment to test
+        #"round_robin",
+        # "shortest_queue",
+        # "nearest",      # Uncomment to test
         "cost_based",   # Uncomment to test
     ]
     
