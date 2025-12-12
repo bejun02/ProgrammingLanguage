@@ -113,6 +113,47 @@ def generate_one_job():
 - 기존: Feed=4283개, 완성품=4221개 → **62개 낭비**
 - 개선 후: 낭비 감소 → **수익 +2만원**
 
+## 7. 수익 및 운영 최적화: CONWIP (Constant Work In Process)
+### 7.1 개요 및 이론적 배경
+**CONWIP**은 공장 내에 투입되어 가공 중인 **활성 작업(WIP, Work In Process)의 총량을 일정 수준으로 유지**하는 생산 제어 방식입니다.
+- **기존 Push 방식**: 설비 상태와 무관하게 자재를 밀어 넣음 → 공장 내 자재가 쌓이고 병목 발생.
+- **CONWIP (Hybrid Pull)**: 공장 전체를 하나의 큰 시스템으로 보고, **"하나가 나가면 하나를 투입(One-in-One-out)"** 하는 원칙을 따릅니다.
+- **Little's Law ($L = \lambda W$)**: 재공품($L$)이 일정할 때, 공정 시간($W$)을 줄이면 처리량($\lambda$)이 늘어납니다. CONWIP은 $L$을 고정하여 $W$가 폭증(Traffic Jam)하는 것을 막습니다.
+
+### 7.2 구현 메커니즘 (`active_wip_count`)
+`최종코드1`에서는 `data_structures.py`와 `sim_core.py`를 통해 이 로직을 정교하게 구현했습니다.
+
+#### A. 전역 상태 추적
+`active_wip_count` 변수는 현재 공장 바닥(Floor)에 있는 **'이동 중이거나 가공 중인 모든 제품의 수'**를 실시간으로 추적합니다.
+- 창고(Warehouse)와 완성품 적재소(Stocker)에 있는 물건은 WIP에 포함되지 않습니다.
+
+```python
+# data_structures.py
+@dataclass
+class GlobalVariable:
+    # ...
+    active_wip_count: int = 0  # [핵심] 현재 공장 내 활성 Job 개수
+```
+
+#### B. 투입 제어 (Gating Mechanism)
+`sim_core.py`의 `try_dispatch_from_warehouse_to_A` 함수는 원자재 투입의 관문(Gate) 역할을 합니다.
+1. **조건 검사**: `active_wip_count`가 **설정된 상한선(`MAX_WIP = 50`)**보다 크거나 같으면 투입을 강제로 **중단(Return)**합니다.
+2. **투입 실행**: WIP 여유가 있을 때만 새로운 작업을 창고에서 꺼냅니다(`pop`).
+3. **카운트 증가**: 투입 즉시 `active_wip_count += 1`.
+
+#### C. 출하 완료 (WIP 해제)
+`sim_core.py`의 `drop_end` (Stocker 하차 시점)에서 작업이 시스템을 완전히 빠져나갔다고 간주합니다.
+- **카운트 감소**: `active_wip_count -= 1`.
+- **선순환**: 카운트가 감소하면, 대기 중이던 투입 함수가 다시 활성화되어 새로운 자재가 들어옵니다.
+
+### 7.3 기대 효과 및 수익 개선
+1. **Deadlock(교착 상태) 완전 차단**:
+   - WIP 제한이 없으면 설비 A, B, C, D의 입력 버퍼가 모두 가득 차게 되고, AMR이 물건을 들고 있어도 내려놓을 곳이 없는 상황이 발생합니다. CONWIP은 이를 물리적으로 차단합니다.
+2. **AMR 이동 효율 증가**:
+   - 공장 내 이동하는 AMR의 수가 적절히 유지되므로, 교차로 병목이나 경로 충돌(Traffic Jam) 확률이 획기적으로 낮아집니다.
+3. **Cycle Time 단축**:
+   - 불필요한 대기 시간이 줄어들어 제품 하나가 완성되는 시간(Lead Time)이 빨라지고, 이는 곧 단위 시간당 **Profit 증가**로 직결됩니다.
+
 ---
 **최종 상태**:
 이 시스템은 **최대 30대**의 AMR이 **100% 검증된 경로**만 사용하여 안전하게 이동하며, 그 모습을 **시각적으로 정확하게** 사용자에게 보여줍니다. 또한 **Feed Cutoff 최적화**로 불필요한 원자재 낭비를 방지합니다.

@@ -44,6 +44,7 @@ class Machine:
     input_reserved: bool = False 
     
     processing_job: Optional["Job"] = None
+    processing_start_time: Optional[float] = None  # When current job started
     output_buf: Optional["Job"] = None
     waiting_done: Optional["Job"] = None
 
@@ -165,6 +166,7 @@ class GlobalVariable:
         self.FEED_COUNT = 0
         self.FEED_COUNT_A = 0
         self.FEED_COUNT_B = 0
+        self.active_wip_count = 0 # Dynamic Feeding WIP Tracker
 
         self.machine_runs: Dict[str, List[Tuple[float, float, str, str]]] = {}
         self.job_runs: Dict[str, List[Tuple[str, float, float, str]]] = {}

@@ -65,7 +65,18 @@ def on_finish_processing(m: Machine):
         log(f"{m.name} output 꽉참 → {job.job_id} waiting_done 대기")
 
 def bootstrap_start():
-    """시뮬레이션 시작 시 한 번만 호출: A가 비어있으면 WH→A 바로 투입"""
+    """시뮬레이션 시작 시: Warm-up 가속 - 여러 개를 한꺼번에 투입"""
+    
+    # [Warm-up] A 설비 개수만큼 동시 투입해서 라인을 빠르게 채움
+    num_a_machines = len(global_variable.MACHINES.get("A", []))
+    warmup_count = num_a_machines  # A 설비 개수만큼 초기 투입
+    
+    log(f"[Warm-up] 초기 투입: {warmup_count}개")
+    
+    for _ in range(warmup_count):
+        generate_one_job()
+    
+    # 이후 표준 디스패치 로직 실행
     while True:
         next_machines = global_variable.MACHINES.get("A", [])
         if not next_machines:
@@ -151,6 +162,7 @@ def try_start_processing(m: Machine):
         s = global_variable.now
         pt = process_time_for(m.stage, job, m); e = s + pt
         m.processing_job = job
+        m.processing_start_time = s  # Track when processing started
 
         def start():
             log(f"{job.job_id}({job.product}): {m.stage} 시작 @ {m.name} (dur={pt}s, cycle_idx={job.cycle_idx})")
@@ -223,6 +235,8 @@ def move_to_next_stage_from_output(m: Machine):
             log(f"{job.job_id}: {amr.name} 하차 완료 @ Stocker")
             log(f"{job.job_id}: 출하 완료 → Stocker에 보관")
             stk.store(job.job_id)
+            global_variable.active_wip_count -= 1 
+            # log(f"WIP: {global_variable.active_wip_count}")
 
             if m.waiting_done is not None and m.output_buf is None:
                 moved = m.waiting_done; m.waiting_done = None
@@ -324,6 +338,13 @@ def move_to_next_stage_from_output(m: Machine):
     
 def try_dispatch_from_warehouse_to_A():
     '''원자재 창고에서 설비A(산화)로 AMR dispatch'''
+    # [Dynamic Feeding] CONWIP Control
+    # Limit active jobs in the factory to prevent congestion
+    MAX_WIP = 50 
+    if global_variable.active_wip_count >= MAX_WIP:
+        # log(f"Feeding Paused (WIP {global_variable.active_wip_count} >= {MAX_WIP})")
+        return
+
     if _exists_priority_job_for_A():
         return
 
@@ -350,6 +371,9 @@ def try_dispatch_from_warehouse_to_A():
     if job is None:
         release_input(drop_m)
         return
+        
+    global_variable.active_wip_count += 1
+    # log(f"WIP Increment: {global_variable.active_wip_count}")
 
     pick_xy = global_variable.WAREHOUSE.xy
     drop_xy = drop_m.input_port
@@ -594,6 +618,14 @@ def pull_from_prev_to(m_next: Machine, policy: str = "eta"):
     
 def generate_one_job():
     """필요 시점에 1개만 생성해서 WAREHOUSE에 넣는다."""
+    
+    # [Feed Cutoff] 남은 시간이 제품 완성에 필요한 최소 시간보다 작으면 투입 중단
+    # 277분 = 16620초
+    MIN_COMPLETION_TIME = 16620 # seconds (277 minutes)
+    remaining_time = global_variable.SIM_END - global_variable.now
+    if remaining_time < MIN_COMPLETION_TIME:
+        return None  # 투입 중단
+    
     if not global_variable.FEED_SEQ:
         prod = "ProdA"
     else:
@@ -624,3 +656,86 @@ def _exists_priority_job_for_A() -> bool:
             if nxt == "A" and getattr(j, "cycle_idx", 0) >= 1:
                 return True
     return False
+
+def preposition_idle_amr(amr):
+    """
+    [AMR Pre-positioning] Interruptible version
+    - AMR moves toward predicted machine BUT remains available for real tasks
+    - Position only updates when move completes
+    - Does NOT block AMR from being assigned to real work
+    """
+    now = global_variable.now
+    
+    # Skip if AMR is already busy
+    if amr.free_time > now:
+        return
+    
+    # Find all machines with active processing jobs
+    candidates = []
+    for stage, machines in global_variable.MACHINES.items():
+        for m in machines:
+            if m.processing_job and m.processing_start_time is not None:
+                pt = process_time_for(m.stage, m.processing_job, m)
+                expected_end = m.processing_start_time + pt
+                
+                if expected_end > now:
+                    travel_time = dist(amr.xy, m.output_port) / max(amr.speed, 1e-9)
+                    # Only consider if we can arrive before or just after completion
+                    arrival_time = now + travel_time
+                    time_diff = expected_end - arrival_time
+                    
+                    # Skip if we'd arrive way too early (>60s wait) or too late (>30s after)
+                    if -30 < time_diff < 60:
+                        candidates.append((abs(time_diff), expected_end, m, travel_time))
+    
+    if not candidates:
+        return
+    
+    # Sort by time_diff closeness to 0 (arrive just in time)
+    candidates.sort(key=lambda x: x[0])
+    
+    # Find which output ports already have an AMR nearby
+    occupied_ports = set()
+    for other_amr in global_variable.AMRS:
+        if other_amr.name == amr.name:
+            continue
+        if other_amr.xy:
+            for _, _, m, _ in candidates:
+                if dist(other_amr.xy, m.output_port) < 3.0:
+                    occupied_ports.add(m.output_port)
+    
+    # Find first available machine
+    target_m = None
+    travel_time = 0
+    
+    for _, _, m, t_time in candidates:
+        if m.output_port not in occupied_ports:
+            target_m = m
+            travel_time = t_time
+            break
+    
+    if target_m is None:
+        return
+    
+    # Skip if already close
+    if dist(amr.xy, target_m.output_port) < 2.0:
+        return
+    
+    # SOFT pre-positioning: Just update planned_xy for reference
+    # Do NOT update free_time - AMR remains available!
+    amr.planned_xy = target_m.output_port
+    
+    arrival_at = now + travel_time
+    start_xy = amr.xy
+    
+    def do_move():
+        # Only actually move if AMR is still free (wasn't assigned a real task)
+        if amr.free_time <= now and amr.xy == start_xy:
+            path = global_variable.path_cache.get((start_xy, target_m.output_port), None)
+            if path:
+                global_variable.amr_runs.setdefault(amr.name, []).append(
+                    (now, arrival_at, "PREPOS", start_xy, target_m.output_port, False, path)
+                )
+            amr.xy = target_m.output_port
+    
+    schedule(arrival_at, do_move)

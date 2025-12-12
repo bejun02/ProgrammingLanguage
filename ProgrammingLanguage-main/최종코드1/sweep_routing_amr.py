@@ -217,8 +217,8 @@ def run_sweep():
     # User-selectable methods
     routing_methods = [
         "round_robin",
-        # "shortest_queue",
-        # "nearest",      # Uncomment to test
+        "shortest_queue",
+        "nearest",      # Uncomment to test
         "cost_based",   # Uncomment to test
     ]
     
